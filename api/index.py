@@ -34,7 +34,7 @@ def get_phash():
         image = Image.open(BytesIO(response.content))
         
         # hash_size=8 是标准设置
-        phash_obj = imagehash.phash(image, hash_size=8)
+        phash_obj = imagehash.dhash(image, hash_size=8)
         
         return jsonify({
             "success": True,
