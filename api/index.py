@@ -5,46 +5,39 @@ import requests
 
 app = Flask(__name__)
 
-# --- 1. 辅助：自动切除白边 (纯 OpenCV 版) ---
-def trim_white_border(img):
+# 1. 辅助：强制提取图片中心区域 (Center Crop)
+# 解决背景色干扰和自动剪裁不准的问题
+def crop_center(img):
     try:
-        # 转灰度
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        h, w = img.shape[:2]
+        # 取中间 50% 的区域
+        # 即使包包有一部分在外面，中间的核心花纹/Logo一定在里面
+        start_x = int(w * 0.25)
+        start_y = int(h * 0.25)
+        end_x = int(w * 0.75)
+        end_y = int(h * 0.75)
         
-        # 二值化：把接近白色的背景(>240)变成黑色(0)，内容变成白色(255)
-        # THRESH_BINARY_INV: 反转，背景变黑，内容变白，方便找轮廓
-        _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-        
-        # 寻找所有非零像素(内容)的坐标
-        coords = cv2.findNonZero(thresh)
-        
-        # 如果全是白的(没内容)，直接返回原图
-        if coords is None:
-            return img
-            
-        # 获取最小外接矩形
-        x, y, w, h = cv2.boundingRect(coords)
-        
-        # 裁剪
-        crop = img[y:y+h, x:x+w]
-        return crop
+        return img[start_y:end_y, start_x:end_x]
     except:
         return img
 
-# --- 2. 算法A：dHash (结构指纹 - 纯 OpenCV 版) ---
-def get_dhash_vector(img):
+# 2. 算法A：aHash (均值哈希 - 结构指纹)
+# 比 dHash 更抗干扰，适合这种角度微变的情况
+def get_ahash_vector(img):
     try:
         # 转灰度
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # 缩放至 9x8
-        resized = cv2.resize(gray, (9, 8))
+        # 缩放至 8x8
+        resized = cv2.resize(gray, (8, 8))
+        
+        # 计算平均像素值
+        avg = resized.mean()
         
         vector = []
-        # 逐像素比较：左边 > 右边 ? 1 : 0
+        # 大于平均值记1，小于记0
         for i in range(8):
             for j in range(8):
-                # OpenCV 像素访问: [row, col]
-                if resized[i, j] > resized[i, j + 1]:
+                if resized[i, j] > avg:
                     vector.append(1.0)
                 else:
                     vector.append(0.0)
@@ -52,11 +45,16 @@ def get_dhash_vector(img):
     except:
         return [0.0] * 64
 
-# --- 3. 算法B：HSV直方图 (颜色指纹) ---
+# 3. 算法B：HSV直方图 (颜色指纹 - 基于中心区域)
 def get_color_vector(img):
     try:
-        img = cv2.resize(img, (300, 300))
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        # 先切中心！只看包包，不看背景
+        center_img = crop_center(img)
+        
+        # 缩放一下加快计算
+        center_img = cv2.resize(center_img, (150, 150))
+        
+        hsv = cv2.cvtColor(center_img, cv2.COLOR_BGR2HSV)
         
         # H(12)*S(4)*V(4) = 192维
         hist = cv2.calcHist([hsv], [0, 1, 2], None, [12, 4, 4], [0, 180, 0, 256, 0, 256])
@@ -68,10 +66,10 @@ def get_color_vector(img):
     except:
         return [0.0] * 192
 
-# --- 主入口 ---
+# --- 主流程 ---
 @app.route('/', methods=['GET'])
 def home():
-    return "Pure OpenCV Hybrid Service is Running! 🚀"
+    return "Center-Crop + aHash Service is Running! 🚀"
 
 @app.route('/api/vector', methods=['GET'])
 def get_vector():
@@ -89,12 +87,9 @@ def get_vector():
         
         if img is None: return jsonify({"success": False, "error": "Decode Fail"}), 400
 
-        # 1. 切白边 (关键修正：解决Prada和Loewe形状误判)
-        crop_img = trim_white_border(img)
-        
-        # 2. 计算混合特征
-        vec_structure = get_dhash_vector(crop_img)
-        vec_color = get_color_vector(crop_img)
+        # 计算特征 (注意：不用自动切边了，函数内部会强制切中心)
+        vec_structure = get_ahash_vector(img) # 64维
+        vec_color = get_color_vector(img)     # 192维
         
         final_vector = vec_structure + vec_color
         
